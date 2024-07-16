@@ -1,5 +1,3 @@
-<!-- See https://github.com/gorilla/websocket/blob/master/examples/chat/home.html -->
-
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -9,6 +7,7 @@
         var conn;
         var msg = document.getElementById("msg");
         var log = document.getElementById("log");
+        var channels = document.getElementById("channels");
 
         function appendLog(item) {
           var doScroll =
@@ -26,27 +25,47 @@
           if (!msg.value) {
             return false;
           }
-          conn.send(msg.value);
-          msg.value = "";
+          var channel = channels.value.trim();
+          if (channel) {
+            conn.send(channel + ":" + msg.value);
+            msg.value = "";
+          } else {
+            alert("Please specify a channel.");
+          }
           return false;
         };
 
-        if (window["WebSocket"]) {
-          conn = new WebSocket("ws://localhost:8080/ws");
-          conn.onclose = function (evt) {
-            var item = document.createElement("div");
-            item.innerHTML = "<b>Connection closed.</b>";
-            appendLog(item);
-          };
-          conn.onmessage = function (evt) {
-            var messages = evt.data.split("\n");
-            for (var i = 0; i < messages.length; i++) {
+        document.getElementById("connectForm").onsubmit = function () {
+          if (conn) {
+            conn.close();
+          }
+
+          var channelList = channels.value.trim();
+          if (channelList) {
+            conn = new WebSocket(
+              "ws://localhost:8080/ws?channels=" + channelList
+            );
+            conn.onclose = function (evt) {
               var item = document.createElement("div");
-              item.innerText = messages[i];
+              item.innerHTML = "<b>Connection closed.</b>";
               appendLog(item);
-            }
-          };
-        } else {
+            };
+            conn.onmessage = function (evt) {
+              var messages = evt.data.split("\n");
+              for (var i = 0; i < messages.length; i++) {
+                var item = document.createElement("div");
+                item.innerText = messages[i];
+                appendLog(item);
+              }
+            };
+          } else {
+            alert("Please specify channels to connect to.");
+          }
+
+          return false;
+        };
+
+        if (!window["WebSocket"]) {
           var item = document.createElement("div");
           item.innerHTML = "<b>Your browser does not support WebSockets.</b>";
           appendLog(item);
@@ -62,39 +81,54 @@
         overflow: hidden;
         padding: 0;
         margin: 0;
-        width: 100%;
-        height: 100%;
+        width: 100vw;
+        height: 100vh;
         background: gray;
+        display: flex;
+        flex-direction: column;
       }
 
       #log {
         background: white;
         margin: 0;
-        padding: 0.5em 0.5em 0.5em 0.5em;
-        position: absolute;
-        top: 0.5em;
-        left: 0.5em;
-        right: 0.5em;
-        bottom: 3em;
+        padding: 0.5em;
+        flex: 1;
         overflow: auto;
       }
 
-      #form {
-        padding: 0 0.5em 0 0.5em;
-        margin: 0;
-        position: absolute;
-        bottom: 1em;
-        left: 0px;
-        width: 100%;
-        overflow: hidden;
+      .form-container {
+        display: flex;
+        padding: 0.5em;
+        background: lightgray;
+      }
+
+      .form-container input[type="text"] {
+        flex: 1;
+        margin-right: 0.5em;
+      }
+
+      .form-container input[type="submit"] {
+        flex: 0;
       }
     </style>
   </head>
   <body>
     <div id="log"></div>
-    <form id="form">
-      <input type="submit" value="Send" />
-      <input type="text" id="msg" size="64" autofocus autocomplete="off" />
-    </form>
+    <div class="form-container" style="margin-top: auto">
+      <form id="connectForm" style="flex: 1; display: flex; margin-right: 1em">
+        <input
+          type="text"
+          id="channels"
+          placeholder="Enter channels, e.g., channel1,channel2"
+          autofocus
+          autocomplete="off"
+        />
+        <input type="submit" value="Connect" />
+      </form>
+      <form id="form" style="flex: 2; display: flex">
+        <input type="text" id="msg" size="64" autocomplete="off" />
+        <input type="submit" value="Send" />
+      </form>
+    </div>
   </body>
 </html>

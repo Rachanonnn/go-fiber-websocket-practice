@@ -3,55 +3,68 @@ package main
 import (
 	"flag"
 	"log"
+	"strings"
 	"sync"
 
 	"github.com/gofiber/contrib/websocket"
 	"github.com/gofiber/fiber/v2"
 )
 
-// Add more data to this type if needed
 type client struct {
 	isClosing bool
 	mu        sync.Mutex
+	channels  map[string]bool
 }
 
-var clients = make(map[*websocket.Conn]*client) // Note: although large maps with pointer-like types (e.g. strings) as keys are slow, using pointers themselves as keys is acceptable and fast
-var register = make(chan *websocket.Conn)
-var broadcast = make(chan string)
+var clients = make(map[*websocket.Conn]*client)
+var register = make(chan *clientConn)
+var broadcast = make(chan *messageData)
 var unregister = make(chan *websocket.Conn)
+
+type clientConn struct {
+	conn     *websocket.Conn
+	channels []string
+}
+
+type messageData struct {
+	channel string
+	text    string
+}
 
 func runHub() {
 	for {
 		select {
-		case connection := <-register:
-			clients[connection] = &client{}
-			log.Println("connection registered")
+		case clientConn := <-register:
+			c := &client{channels: make(map[string]bool)}
+			for _, channel := range clientConn.channels {
+				c.channels[channel] = true
+			}
+			clients[clientConn.conn] = c
+			log.Println("connection registered for channels:", clientConn.channels)
 
-		case message := <-broadcast:
-			log.Println("message received:", message)
-			// Send the message to all clients
+		case msg := <-broadcast:
+			log.Println("message received on channel", msg.channel, ":", msg.text)
 			for connection, c := range clients {
-				go func(connection *websocket.Conn, c *client) { // send to each client in parallel so we don't block on a slow client
-					c.mu.Lock()
-					defer c.mu.Unlock()
-					if c.isClosing {
-						return
-					}
-					if err := connection.WriteMessage(websocket.TextMessage, []byte(message)); err != nil {
-						c.isClosing = true
-						log.Println("write error:", err)
-
-						connection.WriteMessage(websocket.CloseMessage, []byte{})
-						connection.Close()
-						unregister <- connection
-					}
-				}(connection, c)
+				if c.channels[msg.channel] {
+					go func(connection *websocket.Conn, c *client) {
+						c.mu.Lock()
+						defer c.mu.Unlock()
+						if c.isClosing {
+							return
+						}
+						if err := connection.WriteMessage(websocket.TextMessage, []byte(msg.text)); err != nil {
+							c.isClosing = true
+							log.Println("write error:", err)
+							connection.WriteMessage(websocket.CloseMessage, []byte{})
+							connection.Close()
+							unregister <- connection
+						}
+					}(connection, c)
+				}
 			}
 
 		case connection := <-unregister:
-			// Remove the client from the hub
 			delete(clients, connection)
-
 			log.Println("connection unregistered")
 		}
 	}
@@ -63,7 +76,7 @@ func main() {
 	app.Static("/", "./home.html")
 
 	app.Use(func(c *fiber.Ctx) error {
-		if websocket.IsWebSocketUpgrade(c) { // Returns true if the client requested upgrade to the WebSocket protocol
+		if websocket.IsWebSocketUpgrade(c) {
 			return c.Next()
 		}
 		return c.SendStatus(fiber.StatusUpgradeRequired)
@@ -72,28 +85,33 @@ func main() {
 	go runHub()
 
 	app.Get("/ws", websocket.New(func(c *websocket.Conn) {
-		// When the function returns, unregister the client and close the connection
 		defer func() {
 			unregister <- c
 			c.Close()
 		}()
 
-		// Register the client
-		register <- c
+		// Register the client with channels
+		channels := c.Query("channels", "default")
+		register <- &clientConn{conn: c, channels: strings.Split(channels, ",")}
 
 		for {
-			messageType, message, err := c.ReadMessage()
+			messageType, msgContent, err := c.ReadMessage()
 			if err != nil {
 				if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseAbnormalClosure) {
 					log.Println("read error:", err)
 				}
-
-				return // Calls the deferred function, i.e. closes the connection on error
+				return
 			}
 
 			if messageType == websocket.TextMessage {
-				// Broadcast the received message
-				broadcast <- string(message)
+				// Parse the channel and message text
+				parts := strings.SplitN(string(msgContent), ":", 2)
+				if len(parts) < 2 {
+					log.Println("invalid message format")
+					continue
+				}
+				channel, text := parts[0], parts[1]
+				broadcast <- &messageData{channel: channel, text: text}
 			} else {
 				log.Println("websocket message received of type", messageType)
 			}
